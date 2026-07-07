@@ -37,7 +37,7 @@ async def call_gemini(
     model = model or settings.executive_model
 
     try:
-        response = client.models.generate_content(
+        response = await client.aio.models.generate_content(
             model=model,
             contents=prompt,
             config=genai.types.GenerateContentConfig(
