@@ -19,6 +19,10 @@ from utils.streaming import event_bus
 
 logger = logging.getLogger(__name__)
 
+# Semaphore to limit concurrent Gemini API calls (free tier: 5 req/min)
+_API_SEMAPHORE = asyncio.Semaphore(2)
+_STAGGER_DELAY = 3.0  # seconds between batched API calls
+
 # In-memory store for meeting state
 meetings: dict[str, dict[str, Any]] = {}
 
@@ -129,12 +133,13 @@ async def _execute_meeting(meeting_id: str) -> None:
 
         summary_text = json.dumps(summary_result, indent=2)
 
-        # Run all analyses in parallel
-        analysis_tasks = [
-            _run_agent_analysis(meeting_id, agent, summary_text, proposal_text)
-            for agent in executives
-        ]
-        analyses = await asyncio.gather(*analysis_tasks, return_exceptions=True)
+        # Run analyses with rate limiting to avoid RESOURCE_EXHAUSTED
+        analyses = await _run_with_rate_limit(
+            [
+                _run_agent_analysis(meeting_id, agent, summary_text, proposal_text)
+                for agent in executives
+            ]
+        )
 
         # Store results
         for agent, result in zip(executives, analyses):
@@ -179,18 +184,19 @@ async def _execute_meeting(meeting_id: str) -> None:
 
             previous_msgs = json.dumps(meeting["debate_messages"], indent=2)
 
-            # Run debates in parallel
-            debate_tasks = [
-                _run_agent_debate(
-                    meeting_id, agent,
-                    json.dumps(meeting["analyses"].get(agent.name, {})),
-                    all_analyses_text,
-                    previous_msgs,
-                    round_num,
-                )
-                for agent in executives
-            ]
-            debate_results = await asyncio.gather(*debate_tasks, return_exceptions=True)
+            # Run debates with rate limiting to avoid RESOURCE_EXHAUSTED
+            debate_results = await _run_with_rate_limit(
+                [
+                    _run_agent_debate(
+                        meeting_id, agent,
+                        json.dumps(meeting["analyses"].get(agent.name, {})),
+                        all_analyses_text,
+                        previous_msgs,
+                        round_num,
+                    )
+                    for agent in executives
+                ]
+            )
 
             # Process debate messages
             for agent, result in zip(executives, debate_results):
@@ -292,17 +298,18 @@ async def _execute_meeting(meeting_id: str) -> None:
         debate_summary = json.dumps(meeting["debate_messages"][:20], indent=2)
         conflicts_text = json.dumps(meeting["conflicts"], indent=2)
 
-        # Run votes in parallel
-        vote_tasks = [
-            _run_agent_vote(
-                meeting_id, agent,
-                json.dumps(meeting["analyses"].get(agent.name, {})),
-                debate_summary,
-                conflicts_text,
-            )
-            for agent in executives
-        ]
-        vote_results = await asyncio.gather(*vote_tasks, return_exceptions=True)
+        # Run votes with rate limiting to avoid RESOURCE_EXHAUSTED
+        vote_results = await _run_with_rate_limit(
+            [
+                _run_agent_vote(
+                    meeting_id, agent,
+                    json.dumps(meeting["analyses"].get(agent.name, {})),
+                    debate_summary,
+                    conflicts_text,
+                )
+                for agent in executives
+            ]
+        )
 
         for agent, result in zip(executives, vote_results):
             if isinstance(result, Exception):
@@ -369,7 +376,36 @@ async def _execute_meeting(meeting_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Helper coroutines for parallel execution
+# Rate-limited execution helper
+# ---------------------------------------------------------------------------
+
+async def _run_with_rate_limit(
+    coroutines: list,
+) -> list[Any]:
+    """Run coroutines with concurrency limiting and staggered delays.
+
+    Uses a semaphore to cap concurrent Gemini API calls and adds a small
+    delay between launches so we don't burst past the free-tier quota.
+    """
+    results: list[Any] = [None] * len(coroutines)
+
+    async def _wrapped(index: int, coro):
+        async with _API_SEMAPHORE:
+            # Stagger launches so requests don't all fire at once
+            await asyncio.sleep(index * _STAGGER_DELAY)
+            try:
+                results[index] = await coro
+            except Exception as exc:
+                results[index] = exc
+
+    await asyncio.gather(*[
+        _wrapped(i, coro) for i, coro in enumerate(coroutines)
+    ])
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Helper coroutines for agent execution
 # ---------------------------------------------------------------------------
 
 async def _run_agent_analysis(

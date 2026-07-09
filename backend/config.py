@@ -10,8 +10,8 @@ class Settings:
     """Central settings for the AI Startup Boardroom backend."""
 
     GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
-    PRO_MODEL: str = os.getenv("PRO_MODEL", "gemini-3.1-pro")
-    FLASH_MODEL: str = os.getenv("FLASH_MODEL", "gemini-3.5-flash")
+    PRO_MODEL: str = os.getenv("PRO_MODEL", "gemini-2.5-pro")
+    FLASH_MODEL: str = os.getenv("FLASH_MODEL", "gemini-2.5-flash")
     CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 
     # Agent configuration
