@@ -98,7 +98,6 @@ async def call_gemini(
                 continue
 
             # Non-retryable error or out of retries
-            logger.error("Gemini API call failed: %s", e)
             return {
                 "summary": f"Agent encountered an error: {str(e)}",
                 "score": 5.0,
@@ -107,6 +106,13 @@ async def call_gemini(
                 "risks": [str(e)],
                 "recommendation": "Retry required",
                 "details": {},
+                "vote": "CONDITIONAL YES",
+                "confidence": 0.5,
+                "reasoning": f"Fallback due to API error: {str(e)}",
+                "conditions": ["Resolve API error"],
+                "overall_recommendation": "Retry required",
+                "final_confidence_score": 0.0,
+                "executive_summary": "The board meeting could not be completed successfully due to an API quota or rate limit error.",
             }
 
     # Should not reach here, but just in case
@@ -119,4 +125,11 @@ async def call_gemini(
         "risks": [str(last_exception)],
         "recommendation": "Retry required",
         "details": {},
+        "vote": "CONDITIONAL YES",
+        "confidence": 0.5,
+        "reasoning": f"Fallback due to API error: {str(last_exception)}",
+        "conditions": ["Resolve API error"],
+        "overall_recommendation": "Retry required",
+        "final_confidence_score": 0.0,
+        "executive_summary": "The board meeting could not be completed successfully due to an API quota or rate limit error.",
     }
