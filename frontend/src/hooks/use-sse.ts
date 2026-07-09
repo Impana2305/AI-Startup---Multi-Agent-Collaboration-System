@@ -7,6 +7,8 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useMeetingStore } from "@/stores/meeting-store";
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
+
 export function useSSE(meetingId: string | null) {
   const sourceRef = useRef<EventSource | null>(null);
   const {
@@ -28,7 +30,7 @@ export function useSSE(meetingId: string | null) {
       sourceRef.current.close();
     }
 
-    const url = `/api/meetings/stream/${meetingId}`;
+    const url = `${API_BASE}/api/meetings/stream/${meetingId}`;
     const es = new EventSource(url);
     sourceRef.current = es;
 
