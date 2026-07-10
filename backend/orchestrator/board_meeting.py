@@ -19,9 +19,9 @@ from utils.streaming import event_bus
 
 logger = logging.getLogger(__name__)
 
-# Semaphore to limit concurrent Gemini API calls (free tier: 5 req/min)
-_API_SEMAPHORE = asyncio.Semaphore(2)
-_STAGGER_DELAY = 3.0  # seconds between batched API calls
+# Semaphore to limit concurrent provider requests and avoid rate throttling.
+_API_SEMAPHORE = asyncio.Semaphore(1)
+_STAGGER_DELAY = 6.0  # seconds between batched API calls
 
 # In-memory store for meeting state
 meetings: dict[str, dict[str, Any]] = {}
@@ -63,8 +63,10 @@ async def run_board_meeting(startup_data: dict) -> str:
 
     event_bus.create_meeting(meeting_id)
 
-    # Run the meeting in the background
-    asyncio.create_task(_execute_meeting(meeting_id))
+    # Run the meeting in the background while keeping a reference to the task.
+    task = asyncio.create_task(_execute_meeting(meeting_id), name=f"board-meeting-{meeting_id}")
+    meetings[meeting_id]["task"] = task
+    task.add_done_callback(lambda completed_task: meetings.get(meeting_id, {}).pop("task", None))
 
     return meeting_id
 
@@ -364,6 +366,10 @@ async def _execute_meeting(meeting_id: str) -> None:
 
         await event_bus.emit_report_ready(meeting_id, report)
 
+    except asyncio.CancelledError:
+        meeting["status"] = "cancelled"
+        logger.info("Board meeting %s was cancelled", meeting_id)
+        raise
     except Exception as e:
         logger.exception("Board meeting %s failed: %s", meeting_id, e)
         meeting["status"] = "failed"
@@ -398,9 +404,19 @@ async def _run_with_rate_limit(
             except Exception as exc:
                 results[index] = exc
 
-    await asyncio.gather(*[
-        _wrapped(i, coro) for i, coro in enumerate(coroutines)
-    ])
+    tasks = [
+        asyncio.create_task(_wrapped(i, coro), name=f"rate-limited-agent-{i}")
+        for i, coro in enumerate(coroutines)
+    ]
+
+    try:
+        await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
     return results
 
 

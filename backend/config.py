@@ -10,10 +10,15 @@ class Settings:
     """Central settings for the AI Startup Boardroom backend."""
 
     GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
-    PRO_MODEL: str = os.getenv("PRO_MODEL", "gemini-3.5-flash")
-    FLASH_MODEL: str = os.getenv("FLASH_MODEL", "gemini-3.5-flash")
+    PRO_MODEL: str = os.getenv("PRO_MODEL", "gemini-2.0-flash")
+    FLASH_MODEL: str = os.getenv("FLASH_MODEL", "gemini-2.0-flash")
+    LLM_PROVIDER: str = (
+        os.getenv("LLM_PROVIDER", "").strip().lower()
+        or ("groq" if os.getenv("GROQ_API_KEY", "").strip() else "gemini")
+    )
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
     CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
-
     # Agent configuration
     DEBATE_ROUNDS: int = 3
     MAX_TOKENS_PER_AGENT: int = 4096
