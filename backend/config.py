@@ -30,7 +30,7 @@ class Settings:
     GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
     
     OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
-    OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
+    OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
     
     SAMBANOVA_API_KEY: str = os.getenv("SAMBANOVA_API_KEY", "")
     SAMBANOVA_MODEL: str = os.getenv("SAMBANOVA_MODEL", "Meta-Llama-3.1-70B-Instruct")

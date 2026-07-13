@@ -145,14 +145,13 @@ def _build_groq_model_candidates(model: str | None) -> list[str]:
 
 def _build_openrouter_model_candidates(model: str | None) -> list[str]:
     """Build a preferred model list for OpenRouter with free-tier fallbacks."""
-    configured_model = (model or settings.OPENROUTER_MODEL or "meta-llama/llama-3.1-8b-instruct:free").strip()
+    configured_model = (model or settings.OPENROUTER_MODEL or "meta-llama/llama-3.3-70b-instruct:free").strip()
     candidates = [configured_model]
 
     for fallback_model in (
-        "meta-llama/llama-3.1-8b-instruct:free",
-        "qwen/qwen-2.5-72b-instruct:free",
-        "mistralai/mistral-7b-instruct:free",
-        "google/gemini-flash-1.5-exp:free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "meta-llama/llama-3.2-3b-instruct:free",
+        "nousresearch/hermes-3-llama-3.1-405b:free",
     ):
         if fallback_model not in candidates:
             candidates.append(fallback_model)
@@ -263,7 +262,7 @@ async def _call_openai_compatible_endpoint(
     for attempt in range(max_retries):
         key = key_manager.get_key()
         if not key:
-            raise RuntimeError(f"No API keys available for {key_manager.name}")
+            raise RuntimeError(f"No API keys available for {key_manager.provider}")
 
         headers = {
             "Authorization": f"Bearer {key}",
@@ -280,8 +279,9 @@ async def _call_openai_compatible_endpoint(
                 {"role": "user", "content": prompt},
             ],
             "temperature": temperature,
-            "response_format": {"type": "json_object"},
         }
+        if "openrouter" not in base_url.lower():
+            payload["response_format"] = {"type": "json_object"}
 
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -316,7 +316,7 @@ async def _call_openai_compatible_endpoint(
                     available_keys = [k for k in key_manager.keys if key_manager.cooldowns[k] <= now]
                     if available_keys:
                         wait_time = 0.5
-                        logger.info("%s rate limit hit. Retrying immediately using another available key.", key_manager.name.capitalize())
+                        logger.info("%s rate limit hit. Retrying immediately using another available key.", key_manager.provider.capitalize())
                     else:
                         retry_after = None
                         if isinstance(exc, httpx.HTTPStatusError):
@@ -334,22 +334,28 @@ async def _call_openai_compatible_endpoint(
                             if retry_after > 100.0:
                                 retry_after = retry_after / 1000.0
                             wait_time = min(max(retry_after, 0.5), 60.0)
-                            logger.info("%s rate limit header detected. Sleeping for %.2f seconds.", key_manager.name.capitalize(), wait_time)
+                            logger.info("%s rate limit header detected. Sleeping for %.2f seconds.", key_manager.provider.capitalize(), wait_time)
                         else:
-                            wait_time = 2 ** attempt + 3
-                            logger.warning(
-                                "%s request failed (attempt %d/%d). All keys on cooldown. Retrying in %ds: %s",
-                                key_manager.name.capitalize(),
-                                attempt + 1,
-                                max_retries,
-                                wait_time,
-                                exc,
-                            )
+                            earliest_expiry = min(key_manager.cooldowns.values())
+                            sleep_needed = earliest_expiry - now
+                            if sleep_needed > 0:
+                                wait_time = min(sleep_needed + 0.5, 60.0)
+                                logger.info("All %s keys on cooldown. Sleeping for %.2f seconds to let the earliest key clear.", key_manager.provider.capitalize(), wait_time)
+                            else:
+                                wait_time = 2 ** attempt + 3
+                                logger.warning(
+                                    "%s request failed (attempt %d/%d). All keys on cooldown. Retrying in %ds: %s",
+                                    key_manager.provider.capitalize(),
+                                    attempt + 1,
+                                    max_retries,
+                                    wait_time,
+                                    exc,
+                                )
                     await asyncio.sleep(wait_time)
                     continue
             raise
 
-    raise last_error or RuntimeError(f"{key_manager.name.capitalize()} request failed")
+    raise last_error or RuntimeError(f"{key_manager.provider.capitalize()} request failed")
 
 
 async def _call_groq_endpoint(
@@ -429,14 +435,20 @@ async def _call_groq_endpoint(
                             wait_time = min(max(retry_after, 0.5), 60.0)
                             logger.info("Groq rate limit header detected. Sleeping for %.2f seconds.", wait_time)
                         else:
-                            wait_time = 2 ** attempt + 3
-                            logger.warning(
-                                "Groq request failed (attempt %d/%d). All keys on cooldown. Retrying in %ds: %s",
-                                attempt + 1,
-                                max_retries,
-                                wait_time,
-                                exc,
-                            )
+                            earliest_expiry = min(key_manager.cooldowns.values())
+                            sleep_needed = earliest_expiry - now
+                            if sleep_needed > 0:
+                                wait_time = min(sleep_needed + 0.5, 60.0)
+                                logger.info("All Groq keys on cooldown. Sleeping for %.2f seconds to let the earliest key clear.", wait_time)
+                            else:
+                                wait_time = 2 ** attempt + 3
+                                logger.warning(
+                                    "Groq request failed (attempt %d/%d). All keys on cooldown. Retrying in %ds: %s",
+                                    attempt + 1,
+                                    max_retries,
+                                    wait_time,
+                                    exc,
+                                )
                     await asyncio.sleep(wait_time)
                     continue
             raise
