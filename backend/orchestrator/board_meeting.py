@@ -29,18 +29,22 @@ def get_concurrency_settings() -> tuple[int, float]:
 
     if provider == "groq":
         keys = getattr(settings, "groq_api_keys", [])
+        num_keys = len(keys)
+        if num_keys <= 1:
+            return 1, 6.0
+        elif num_keys == 2:
+            return 1, 4.0
+        else:
+            return 2, 3.5
     else:
         keys = getattr(settings, "google_api_keys", [])
-
-    num_keys = len(keys)
-    if num_keys <= 1:
-        return 1, 6.0
-    elif num_keys == 2:
-        return 2, 3.0
-    elif num_keys <= 4:
-        return 3, 1.5
-    else:
-        return 4, 1.0
+        num_keys = len(keys)
+        if num_keys <= 1:
+            return 1, 4.0
+        elif num_keys == 2:
+            return 2, 2.5
+        else:
+            return 3, 1.5
 
 
 def _get_compact_analyses(analyses_dict: dict) -> str:
@@ -256,34 +260,10 @@ async def _execute_meeting(meeting_id: str) -> None:
                 ]
             )
 
-            # Process debate messages
+            # Log any errors (successful debate messages are emitted in real-time inside _run_agent_debate)
             for agent, result in zip(executives, debate_results):
                 if isinstance(result, Exception):
                     logger.error("Debate failed for %s: %s", agent.name, result)
-                    continue
-
-                messages = result.get("messages", [])
-                for msg in messages:
-                    debate_msg = {
-                        "speaker": agent.name,
-                        "speaker_role": agent.role,
-                        "target": msg.get("target", "All"),
-                        "message_type": msg.get("message_type", "comment"),
-                        "content": msg.get("content", ""),
-                        "round_number": round_num,
-                    }
-                    meeting["debate_messages"].append(debate_msg)
-
-                    await event_bus.emit_debate_message(
-                        meeting_id,
-                        agent.name,
-                        agent.role,
-                        msg.get("target"),
-                        msg.get("message_type", "comment"),
-                        msg.get("content", ""),
-                        round_num,
-                    )
-                    await asyncio.sleep(0.1)
 
         # ── Step 7: Conflict Resolution ─────────────────────────────
         await event_bus.emit_phase_change(meeting_id, 7, PHASE_NAMES[7])
@@ -517,12 +497,40 @@ async def _run_agent_debate(
     previous_messages: str,
     round_number: int,
 ) -> dict[str, Any]:
-    """Run a single agent's debate contribution."""
+    """Run a single agent's debate contribution and emit messages in real-time."""
     await event_bus.emit_agent_status(meeting_id, agent.name, agent.role, "thinking")
 
     result = await agent.debate(own_analysis, other_analyses, previous_messages, round_number)
 
     await event_bus.emit_agent_status(meeting_id, agent.name, agent.role, "done")
+
+    # Real-time message emission & insertion into meeting state
+    if not isinstance(result, Exception):
+        meeting = meetings.get(meeting_id)
+        if meeting:
+            messages = result.get("messages", [])
+            for msg in messages:
+                debate_msg = {
+                    "speaker": agent.name,
+                    "speaker_role": agent.role,
+                    "target": msg.get("target", "All"),
+                    "message_type": msg.get("message_type", "comment"),
+                    "content": msg.get("content", ""),
+                    "round_number": round_number,
+                }
+                meeting["debate_messages"].append(debate_msg)
+
+                await event_bus.emit_debate_message(
+                    meeting_id,
+                    agent.name,
+                    agent.role,
+                    msg.get("target"),
+                    msg.get("message_type", "comment"),
+                    msg.get("content", ""),
+                    round_number,
+                )
+                await asyncio.sleep(0.1)
+
     return result
 
 
