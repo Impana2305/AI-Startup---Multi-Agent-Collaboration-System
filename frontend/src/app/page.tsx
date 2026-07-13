@@ -22,7 +22,7 @@ export default function Home() {
       storeStart(result.meeting_id);
     } catch (err) {
       console.error("Failed to start meeting:", err);
-      alert("Failed to start board meeting. Make sure the backend is running on port 8000.");
+      alert(`Failed to start board meeting: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setIsLoading(false);
     }
