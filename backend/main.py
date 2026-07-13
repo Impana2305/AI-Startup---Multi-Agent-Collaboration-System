@@ -55,7 +55,7 @@ async def health():
     """Detailed health check."""
     return {
         "status": "healthy",
-        "gemini_configured": bool(settings.GOOGLE_API_KEY),
+        "gemini_configured": bool(settings.GOOGLE_API_KEY) or bool(getattr(settings, "google_api_keys", [])),
         "pro_model": settings.PRO_MODEL,
         "flash_model": settings.FLASH_MODEL,
     }

@@ -19,9 +19,64 @@ from utils.streaming import event_bus
 
 logger = logging.getLogger(__name__)
 
-# Semaphore to limit concurrent provider requests and avoid rate throttling.
-_API_SEMAPHORE = asyncio.Semaphore(1)
-_STAGGER_DELAY = 6.0  # seconds between batched API calls
+from config import settings
+
+def get_concurrency_settings() -> tuple[int, float]:
+    """Determine the semaphore limit and stagger delay based on the number of keys."""
+    provider = (settings.LLM_PROVIDER or "gemini").lower()
+    if provider == "auto":
+        provider = "groq" if getattr(settings, "groq_api_keys", []) else "gemini"
+
+    if provider == "groq":
+        keys = getattr(settings, "groq_api_keys", [])
+    else:
+        keys = getattr(settings, "google_api_keys", [])
+
+    num_keys = len(keys)
+    if num_keys <= 1:
+        return 1, 6.0
+    elif num_keys == 2:
+        return 2, 3.0
+    elif num_keys <= 4:
+        return 3, 1.5
+    else:
+        return 4, 1.0
+
+
+def _get_compact_analyses(analyses_dict: dict) -> str:
+    """Formats raw agent analyses into a compact text block to save token quota."""
+    compact = []
+    for name, analysis in analyses_dict.items():
+        score = analysis.get("score", "N/A")
+        rec = analysis.get("recommendation", "N/A")
+        summary = analysis.get("summary", "")
+        truncated_summary = summary[:300] + "..." if len(summary) > 300 else summary
+
+        pros = ", ".join(analysis.get("pros", []))
+        cons = ", ".join(analysis.get("cons", []))
+        risks = ", ".join(analysis.get("risks", []))
+
+        compact.append(
+            f"- **{name} ({analysis.get('agent_role', 'Executive')})** [Score: {score}/10, Rec: {rec}]\n"
+            f"  Summary: {truncated_summary}\n"
+            f"  Pros: {pros}\n"
+            f"  Cons: {cons}\n"
+            f"  Risks: {risks}"
+        )
+    return "\n\n".join(compact)
+
+
+def _get_compact_debate_history(messages: list) -> str:
+    """Formats debate message history into a compact, space-efficient list."""
+    if not messages:
+        return "No previous messages yet."
+    compact = []
+    for msg in messages:
+        compact.append(
+            f"Round {msg.get('round_number', 1)}: {msg.get('speaker')} ({msg.get('speaker_role')}) to {msg.get('target', 'All')}: \"{msg.get('content')}\""
+        )
+    return "\n".join(compact)
+
 
 # In-memory store for meeting state
 meetings: dict[str, dict[str, Any]] = {}
@@ -177,6 +232,7 @@ async def _execute_meeting(meeting_id: str) -> None:
         meeting["current_phase"] = 6
 
         all_analyses_text = json.dumps(meeting["analyses"], indent=2)
+        compact_analyses_text = _get_compact_analyses(meeting["analyses"])
 
         for round_num in range(1, 4):  # 3 debate rounds
             await event_bus.emit(meeting_id, "debate_round", {
@@ -184,7 +240,7 @@ async def _execute_meeting(meeting_id: str) -> None:
                 "message": f"Debate Round {round_num} of 3",
             })
 
-            previous_msgs = json.dumps(meeting["debate_messages"], indent=2)
+            previous_msgs = _get_compact_debate_history(meeting["debate_messages"])
 
             # Run debates with rate limiting to avoid RESOURCE_EXHAUSTED
             debate_results = await _run_with_rate_limit(
@@ -192,7 +248,7 @@ async def _execute_meeting(meeting_id: str) -> None:
                     _run_agent_debate(
                         meeting_id, agent,
                         json.dumps(meeting["analyses"].get(agent.name, {})),
-                        all_analyses_text,
+                        compact_analyses_text,
                         previous_msgs,
                         round_num,
                     )
@@ -236,8 +292,10 @@ async def _execute_meeting(meeting_id: str) -> None:
         await event_bus.emit_agent_status(meeting_id, "Founder", "CEO", "thinking")
 
         debate_transcript = json.dumps(meeting["debate_messages"], indent=2)
+        compact_debate = _get_compact_debate_history(meeting["debate_messages"])
+        compact_analyses = _get_compact_analyses(meeting["analyses"])
         conflict_result = await founder.resolve_conflicts(
-            debate_transcript, all_analyses_text
+            compact_debate, compact_analyses
         )
 
         meeting["conflicts"] = conflict_result.get("conflicts", [])
@@ -274,7 +332,7 @@ async def _execute_meeting(meeting_id: str) -> None:
                 revision = await agent.revise(
                     revision_request=req.get("request", ""),
                     original_position=json.dumps(meeting["analyses"].get(agent.name, {})),
-                    debate_context=debate_transcript[:3000],
+                    debate_context=compact_debate[:3000],
                 )
 
                 status = "revised their position" if revision.get("revised") else "maintained their position"
@@ -297,7 +355,7 @@ async def _execute_meeting(meeting_id: str) -> None:
         )
         await asyncio.sleep(0.3)
 
-        debate_summary = json.dumps(meeting["debate_messages"][:20], indent=2)
+        compact_debate_summary = _get_compact_debate_history(meeting["debate_messages"])
         conflicts_text = json.dumps(meeting["conflicts"], indent=2)
 
         # Run votes with rate limiting to avoid RESOURCE_EXHAUSTED
@@ -306,7 +364,7 @@ async def _execute_meeting(meeting_id: str) -> None:
                 _run_agent_vote(
                     meeting_id, agent,
                     json.dumps(meeting["analyses"].get(agent.name, {})),
-                    debate_summary,
+                    compact_debate_summary,
                     conflicts_text,
                 )
                 for agent in executives
@@ -344,8 +402,8 @@ async def _execute_meeting(meeting_id: str) -> None:
 
         final_decision = await founder.make_final_decision(
             summary=json.dumps(meeting["summary"]),
-            analyses=all_analyses_text,
-            debate=debate_transcript[:4000],
+            analyses=compact_analyses_text,
+            debate=compact_debate[:4000],
             conflicts=conflicts_text,
             votes=json.dumps(meeting["votes"], indent=2),
         )
@@ -390,15 +448,18 @@ async def _run_with_rate_limit(
 ) -> list[Any]:
     """Run coroutines with concurrency limiting and staggered delays.
 
-    Uses a semaphore to cap concurrent Gemini API calls and adds a small
-    delay between launches so we don't burst past the free-tier quota.
+    Uses a semaphore to cap concurrent API calls and adds a small
+    delay between launches so we don't burst past the rate limits.
     """
+    concurrency_limit, stagger_delay = get_concurrency_settings()
+    sem = asyncio.Semaphore(concurrency_limit)
     results: list[Any] = [None] * len(coroutines)
 
     async def _wrapped(index: int, coro):
-        async with _API_SEMAPHORE:
-            # Stagger launches so requests don't all fire at once
-            await asyncio.sleep(index * _STAGGER_DELAY)
+        # Sleep first to stagger the launches (before acquiring semaphore)
+        if stagger_delay > 0:
+            await asyncio.sleep(index * stagger_delay)
+        async with sem:
             try:
                 results[index] = await coro
             except Exception as exc:
