@@ -36,4 +36,3 @@ desktop.ini
 # Misc
 *.log
 .vercel
-backend/.env.example
