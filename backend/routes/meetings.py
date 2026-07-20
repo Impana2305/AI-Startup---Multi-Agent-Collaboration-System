@@ -37,7 +37,8 @@ async def stream_meeting(meeting_id: str):
         event_bus.subscribe(meeting_id),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache, no-transform, no-store",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },

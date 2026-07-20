@@ -48,15 +48,23 @@ class MeetingEventBus:
         if queue is None:
             return
 
+        # Send initial connection comment frame to flush HTTP response headers immediately
+        yield ": connected\n\n"
+
         while True:
-            event = await queue.get()
+            try:
+                # Wait for an event with a 3-second timeout for keep-alive pings
+                event = await asyncio.wait_for(queue.get(), timeout=3.0)
 
-            # Sentinel to end the stream
-            if event.get("type") == "stream_end":
-                yield f"event: stream_end\ndata: {json.dumps(event['data'])}\n\n"
-                break
+                # Sentinel to end the stream
+                if event.get("type") == "stream_end":
+                    yield f"event: stream_end\ndata: {json.dumps(event['data'])}\n\n"
+                    break
 
-            yield f"event: {event['type']}\ndata: {json.dumps(event['data'])}\n\n"
+                yield f"event: {event['type']}\ndata: {json.dumps(event['data'])}\n\n"
+            except asyncio.TimeoutError:
+                # Send comment keep-alive ping to force intermediate proxies to flush buffers
+                yield ": keep-alive\n\n"
 
     async def emit_phase_change(
         self, meeting_id: str, phase: int, phase_name: str

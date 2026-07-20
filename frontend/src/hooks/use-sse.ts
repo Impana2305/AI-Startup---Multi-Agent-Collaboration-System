@@ -7,7 +7,13 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useMeetingStore } from "@/stores/meeting-store";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
+function getApiBase(): string {
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
+  if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
+    return "http://localhost:8000";
+  }
+  return "";
+}
 
 export function useSSE(meetingId: string | null) {
   const sourceRef = useRef<EventSource | null>(null);
@@ -30,7 +36,8 @@ export function useSSE(meetingId: string | null) {
       sourceRef.current.close();
     }
 
-    const url = `${API_BASE}/api/meetings/stream/${meetingId}`;
+    const apiBase = getApiBase();
+    const url = `${apiBase}/api/meetings/stream/${meetingId}`;
     const es = new EventSource(url);
     sourceRef.current = es;
 
